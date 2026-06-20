@@ -1,4 +1,2 @@
-# Optional: install these only if you want the `voice` command.
-# pip install -r requirements-voice.txt
 SpeechRecognition>=3.10.0
 PyAudio>=0.2.13
