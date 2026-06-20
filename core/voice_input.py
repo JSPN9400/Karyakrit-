@@ -1,17 +1,18 @@
 """
 Lightweight voice input helper using SpeechRecognition (microphone) if available.
-This keeps the implementation small; if `pyaudio` is not installed you'll get an informative error.
+
+This is optional functionality. The core app works without it. To enable
+the `voice` command, install the extra dependencies:
+
+    pip install -r requirements-voice.txt
+
+On Windows you may also need PyAudio wheels (`pipwin install pyaudio`) if
+the plain pip install fails to build.
 
 Usage:
     from core.voice_input import listen_from_mic
     text = listen_from_mic(timeout=5)
-
-Notes:
-- On Windows you may need to install PyAudio wheels or use `pipwin install pyaudio`.
-- This module intentionally keeps behavior simple and optional.
 """
-
-import time
 
 
 def listen_from_mic(timeout: int = 5) -> str:
@@ -19,14 +20,26 @@ def listen_from_mic(timeout: int = 5) -> str:
 
     Uses `speech_recognition` with the default Google recognizer as a fallback. This requires
     internet for the Google API. If you need fully offline transcription, integrate whisper separately.
+
+    Raises:
+        RuntimeError: If the optional voice dependencies are not installed, or if no
+            microphone is available, with a message describing how to fix it.
     """
     try:
         import speech_recognition as sr
-    except Exception as e:
-        raise RuntimeError('speech_recognition is required for microphone input: ' + str(e))
+    except ImportError:
+        raise RuntimeError(
+            "Voice input requires extra packages that aren't installed. "
+            "Run: pip install -r requirements-voice.txt "
+            "(on Windows, if PyAudio fails to build, try: pipwin install pyaudio)"
+        )
 
-    r = sr.Recognizer()
-    mic = sr.Microphone()
+    try:
+        r = sr.Recognizer()
+        mic = sr.Microphone()
+    except OSError as e:
+        raise RuntimeError(f"No microphone available: {e}")
+
     with mic as source:
         r.adjust_for_ambient_noise(source, duration=0.5)
         print(f"Listening for {timeout} seconds...")
@@ -37,7 +50,6 @@ def listen_from_mic(timeout: int = 5) -> str:
         text = r.recognize_google(audio)
         return text
     except sr.RequestError as e:
-        raise RuntimeError('API unavailable or unresponsive: ' + str(e))
+        raise RuntimeError(f"Speech recognition API unavailable or unresponsive: {e}")
     except sr.UnknownValueError:
         return ''
- 

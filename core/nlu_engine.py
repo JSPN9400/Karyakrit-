@@ -33,7 +33,7 @@ class NLUEngine:
         # Synonym mappings for common variations
         self.synonyms = {
             'presentation': ['presentation', 'presetion', 'ppt', 'slides', 'slide', 'powerpoint'],
-            'excel': ['excel', 'xlsx', 'sheet', 'spreadsheet', 'calc'],
+            'excel': ['excel', 'xlsx', 'sheet', 'spreadsheet'],
             'email': ['email', 'mail', 'gmail', 'outlook', 'message'],
             'task': ['task', 'todo', 'kaam', 'work', 'assignment'],
             'note': ['note', 'notes', 'likh', 'likho', 'banao'],
@@ -115,12 +115,26 @@ class NLUEngine:
         logger.info(f"NLU Result: intent={intent}, confidence={confidence:.2f}, entities={entities}")
         return result
 
+    # Known application/website names that must never be fuzzy-collapsed into an
+    # unrelated synonym (e.g. "notepad" was scoring 72% against "note" and being
+    # silently rewritten to "note", which broke `open app notepad` routing).
+    _PROTECTED_WORDS = {
+        'notepad', 'calc', 'calculator', 'chrome', 'firefox', 'edge', 'safari',
+        'paint', 'explorer', 'finder', 'terminal', 'cmd', 'powershell',
+        'gmail', 'outlook', 'word', 'excel', 'powerpoint', 'vscode', 'code',
+        'marks', 'grades', 'scores',
+    }
+
     def _normalize_text(self, text: str) -> str:
         """Normalize text by applying synonyms and cleaning."""
         words = text.lower().split()
         normalized_words = []
 
         for word in words:
+            if word in self._PROTECTED_WORDS:
+                normalized_words.append(word)
+                continue
+
             # Find best synonym match
             best_match = word
             best_score = 0
@@ -173,9 +187,13 @@ class NLUEngine:
         if 'topic' not in entities:
             # Try to extract topic from remaining text
             words = normalized_text.split()
-            # Remove common command words
-            command_words = ['create', 'make', 'open', 'draft', 'list', 'complete', 'search', 'organize']
-            topic_words = [w for w in words if w not in command_words and not w.isdigit()]
+            # Remove command words and category nouns (excel, presentation, email, etc.)
+            # so e.g. "create excel student marks" yields topic "student marks", not
+            # "excel student marks".
+            command_words = {'create', 'make', 'open', 'draft', 'list', 'complete', 'search', 'organize'}
+            category_words = set(self.synonyms.keys())
+            skip_words = command_words | category_words
+            topic_words = [w for w in words if w not in skip_words and not w.isdigit()]
             if topic_words:
                 entities['topic'] = ' '.join(topic_words)
 

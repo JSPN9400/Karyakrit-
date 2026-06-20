@@ -8,7 +8,7 @@ Supports Gemini, Grok (xAI), OpenAI with automatic fallback.
 import json
 import logging
 import os
-import time
+import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 import requests
@@ -85,10 +85,8 @@ class LLMProviderManager:
             slide_count: Number of slides to generate.
 
         Returns:
-            PresentationOutline: Structured outline.
-
-        Raises:
-            LLMProviderError: If all providers fail.
+            PresentationOutline: Structured outline. Falls back to a deterministic
+            template if every configured provider fails or is unavailable.
         """
         if not self.enable_ai:
             logger.info("AI disabled, using fallback")
@@ -100,20 +98,21 @@ class LLMProviderManager:
             try:
                 logger.info(f"Attempting presentation generation with provider: {provider}")
                 if provider == 'gemini':
-                    result = self._call_gemini(prompt)
+                    raw = self._call_gemini(prompt)
                 elif provider == 'grok':
-                    result = self._call_grok(prompt)
+                    raw = self._call_grok(prompt)
                 elif provider == 'openai':
-                    result = self._call_openai(prompt)
+                    raw = self._call_openai(prompt)
                 elif provider == 'ollama':
-                    result = self._call_ollama(prompt)
+                    raw = self._call_ollama(prompt)
                 elif provider == 'fallback':
-                    result = self._generate_fallback_presentation(topic, slide_count)
-                    return result
+                    return self._generate_fallback_presentation(topic, slide_count)
                 else:
                     continue
 
-                # Validate result
+                # Convert the raw JSON dict returned by the API into a PresentationOutline
+                result = self._to_presentation_outline(raw)
+
                 if self._validate_presentation_outline(result):
                     logger.info(f"Successfully generated presentation with {provider}")
                     return result
@@ -125,7 +124,8 @@ class LLMProviderManager:
                 logger.warning(f"Provider {provider} failed: {e}")
                 continue
 
-        raise LLMProviderError("All providers failed to generate presentation outline")
+        logger.warning("All AI providers failed or are unconfigured; using deterministic fallback")
+        return self._generate_fallback_presentation(topic, slide_count)
 
     def generate_email_draft(self, email_type: str, recipient: str, tone: str, purpose: str) -> EmailDraft:
         """
@@ -138,10 +138,8 @@ class LLMProviderManager:
             purpose: Email purpose.
 
         Returns:
-            EmailDraft: Structured email draft.
-
-        Raises:
-            LLMProviderError: If all providers fail.
+            EmailDraft: Structured email draft. Falls back to a deterministic
+            template if every configured provider fails or is unavailable.
         """
         if not self.enable_ai:
             logger.info("AI disabled, using fallback")
@@ -153,20 +151,21 @@ class LLMProviderManager:
             try:
                 logger.info(f"Attempting email generation with provider: {provider}")
                 if provider == 'gemini':
-                    result = self._call_gemini(prompt)
+                    raw = self._call_gemini(prompt)
                 elif provider == 'grok':
-                    result = self._call_grok(prompt)
+                    raw = self._call_grok(prompt)
                 elif provider == 'openai':
-                    result = self._call_openai(prompt)
+                    raw = self._call_openai(prompt)
                 elif provider == 'ollama':
-                    result = self._call_ollama(prompt)
+                    raw = self._call_ollama(prompt)
                 elif provider == 'fallback':
-                    result = self._generate_fallback_email(email_type, recipient, tone, purpose)
-                    return result
+                    return self._generate_fallback_email(email_type, recipient, tone, purpose)
                 else:
                     continue
 
-                # Validate result
+                # Convert the raw JSON dict returned by the API into an EmailDraft
+                result = self._to_email_draft(raw)
+
                 if self._validate_email_draft(result):
                     logger.info(f"Successfully generated email with {provider}")
                     return result
@@ -178,10 +177,15 @@ class LLMProviderManager:
                 logger.warning(f"Provider {provider} failed: {e}")
                 continue
 
-        raise LLMProviderError("All providers failed to generate email draft")
+        logger.warning("All AI providers failed or are unconfigured; using deterministic fallback")
+        return self._generate_fallback_email(email_type, recipient, tone, purpose)
 
-    def _call_gemini(self, prompt: str) -> Any:
-        """Call Gemini API."""
+    # ------------------------------------------------------------------
+    # Provider calls
+    # ------------------------------------------------------------------
+
+    def _call_gemini(self, prompt: str) -> Dict:
+        """Call Gemini API. Returns a raw parsed JSON dict."""
         if not self.gemini_api_key:
             raise LLMProviderError("Gemini API key not configured")
 
@@ -197,8 +201,8 @@ class LLMProviderManager:
         result = response.json()
         return self._parse_gemini_response(result)
 
-    def _call_grok(self, prompt: str) -> Any:
-        """Call Grok (xAI) API."""
+    def _call_grok(self, prompt: str) -> Dict:
+        """Call Grok (xAI) API. Returns a raw parsed JSON dict."""
         if not self.xai_api_key:
             raise LLMProviderError("xAI API key not configured")
 
@@ -219,8 +223,8 @@ class LLMProviderManager:
         result = response.json()
         return self._parse_grok_response(result)
 
-    def _call_openai(self, prompt: str) -> Any:
-        """Call OpenAI API."""
+    def _call_openai(self, prompt: str) -> Dict:
+        """Call OpenAI API. Returns a raw parsed JSON dict."""
         if not self.openai_api_key:
             raise LLMProviderError("OpenAI API key not configured")
 
@@ -241,8 +245,8 @@ class LLMProviderManager:
         result = response.json()
         return self._parse_openai_response(result)
 
-    def _call_ollama(self, prompt: str) -> Any:
-        """Call Ollama API."""
+    def _call_ollama(self, prompt: str) -> Dict:
+        """Call Ollama API. Returns a raw parsed JSON dict."""
         url = f"{self.ollama_host}/api/generate"
         data = {
             "model": self.ollama_model,
@@ -258,44 +262,102 @@ class LLMProviderManager:
         except requests.RequestException as e:
             raise LLMProviderError(f"Ollama request failed: {e}")
 
-    def _parse_gemini_response(self, response: Dict) -> Any:
-        """Parse Gemini API response."""
+    # ------------------------------------------------------------------
+    # Response parsing
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_json_text(text: str) -> str:
+        """
+        Strip common LLM response wrapping (markdown code fences, leading/trailing
+        prose) so json.loads has a fighting chance. LLMs frequently wrap JSON in
+        ```json ... ``` even when explicitly asked for raw JSON.
+        """
+        text = text.strip()
+        fence_match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+        if fence_match:
+            return fence_match.group(1).strip()
+        return text
+
+    def _parse_gemini_response(self, response: Dict) -> Dict:
+        """Parse Gemini API response into a raw dict."""
         try:
             text = response['candidates'][0]['content']['parts'][0]['text']
-            return json.loads(text)
-        except (KeyError, json.JSONDecodeError) as e:
+            return json.loads(self._extract_json_text(text))
+        except (KeyError, IndexError, json.JSONDecodeError) as e:
             raise LLMProviderError(f"Failed to parse Gemini response: {e}")
 
-    def _parse_grok_response(self, response: Dict) -> Any:
-        """Parse Grok API response."""
+    def _parse_grok_response(self, response: Dict) -> Dict:
+        """Parse Grok API response into a raw dict."""
         try:
             text = response['choices'][0]['message']['content']
-            return json.loads(text)
-        except (KeyError, json.JSONDecodeError) as e:
+            return json.loads(self._extract_json_text(text))
+        except (KeyError, IndexError, json.JSONDecodeError) as e:
             raise LLMProviderError(f"Failed to parse Grok response: {e}")
 
-    def _parse_openai_response(self, response: Dict) -> Any:
-        """Parse OpenAI API response."""
+    def _parse_openai_response(self, response: Dict) -> Dict:
+        """Parse OpenAI API response into a raw dict."""
         try:
             text = response['choices'][0]['message']['content']
-            return json.loads(text)
-        except (KeyError, json.JSONDecodeError) as e:
+            return json.loads(self._extract_json_text(text))
+        except (KeyError, IndexError, json.JSONDecodeError) as e:
             raise LLMProviderError(f"Failed to parse OpenAI response: {e}")
 
-    def _parse_ollama_response(self, response: Dict) -> Any:
-        """Parse Ollama API response."""
+    def _parse_ollama_response(self, response: Dict) -> Dict:
+        """Parse Ollama API response into a raw dict."""
         try:
             text = response['response']
-            return json.loads(text)
+            return json.loads(self._extract_json_text(text))
         except (KeyError, json.JSONDecodeError) as e:
             raise LLMProviderError(f"Failed to parse Ollama response: {e}")
+
+    # ------------------------------------------------------------------
+    # Raw dict -> dataclass conversion
+    #
+    # The provider calls above all return plain dicts from json.loads().
+    # These helpers turn those dicts into the typed dataclasses the rest
+    # of the app expects, and are what was missing before: validation was
+    # checking isinstance(raw_dict, PresentationOutline), which can never
+    # be true for a plain dict, so every successful API call was being
+    # discarded and the app always silently fell back to the static
+    # template. These converters close that gap.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _to_presentation_outline(raw: Any) -> Optional[PresentationOutline]:
+        """Convert a raw JSON dict into a PresentationOutline, or None if malformed."""
+        if isinstance(raw, PresentationOutline):
+            return raw
+        if not isinstance(raw, dict):
+            return None
+        slides = raw.get('slides')
+        if not isinstance(slides, list):
+            return None
+        return PresentationOutline(slides=slides)
+
+    @staticmethod
+    def _to_email_draft(raw: Any) -> Optional[EmailDraft]:
+        """Convert a raw JSON dict into an EmailDraft, or None if malformed."""
+        if isinstance(raw, EmailDraft):
+            return raw
+        if not isinstance(raw, dict):
+            return None
+        subject = raw.get('subject')
+        body = raw.get('body')
+        if not subject or not body:
+            return None
+        return EmailDraft(subject=subject, body=body)
+
+    # ------------------------------------------------------------------
+    # Prompt building
+    # ------------------------------------------------------------------
 
     def _build_presentation_prompt(self, topic: str, slide_count: int) -> str:
         """Build prompt for presentation outline generation."""
         return f"""
 Generate a presentation outline for the topic "{topic}" with exactly {slide_count} slides.
 
-Return the result as a JSON object with this structure:
+Return ONLY a raw JSON object (no markdown formatting, no code fences, no extra text) with this structure:
 {{
   "slides": [
     {{
@@ -316,7 +378,7 @@ Generate a {tone} email draft for a {email_type} to {recipient}.
 
 Purpose: {purpose}
 
-Return the result as a JSON object with this structure:
+Return ONLY a raw JSON object (no markdown formatting, no code fences, no extra text) with this structure:
 {{
   "subject": "Email Subject Line",
   "body": "Full email body text here..."
@@ -324,6 +386,10 @@ Return the result as a JSON object with this structure:
 
 Make it professional and appropriate for office communication.
 """
+
+    # ------------------------------------------------------------------
+    # Deterministic fallbacks (no network / no AI required)
+    # ------------------------------------------------------------------
 
     def _generate_fallback_presentation(self, topic: str, slide_count: int) -> PresentationOutline:
         """Generate deterministic fallback presentation outline."""
@@ -372,18 +438,32 @@ Make it professional and appropriate for office communication.
             }
         ]
 
-        slides = structure[:slide_count]
+        # If more slides were requested than the template provides, repeat
+        # generic sections rather than silently truncating expectations.
+        if slide_count > len(structure):
+            extra_needed = slide_count - len(structure)
+            for i in range(extra_needed):
+                structure.append({
+                    "title": f"Additional Discussion {i + 1} - {topic.title()}",
+                    "content": [
+                        "Supporting details and context",
+                        "Further analysis",
+                        "Open questions for discussion"
+                    ]
+                })
+
+        slides = structure[:slide_count] if slide_count > 0 else structure
         return PresentationOutline(slides=slides)
 
     def _generate_fallback_email(self, email_type: str, recipient: str, tone: str, purpose: str) -> EmailDraft:
         """Generate deterministic fallback email draft."""
         logger.info(f"Using fallback email generation for {email_type} to {recipient}")
 
-        subject = f"Regarding {purpose.title()}"
+        subject = f"Regarding {purpose.title()}" if purpose else f"Regarding {email_type.title()}"
         body = f"""
 Dear {recipient},
 
-I am writing to {purpose}.
+I am writing to {purpose or email_type}.
 
 Please let me know if you need any additional information.
 
@@ -392,6 +472,10 @@ Best regards,
 """
 
         return EmailDraft(subject=subject, body=body.strip())
+
+    # ------------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------------
 
     def _validate_presentation_outline(self, outline: Any) -> bool:
         """Validate presentation outline structure."""

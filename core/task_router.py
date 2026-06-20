@@ -65,7 +65,7 @@ def route_task(intent, parsed_command):
         else:
             filename = _safe_filename(topic or 'sample', default='sample')
 
-        create_excel(filename)
+        create_excel(filename, topic=topic)
         print("Excel file created successfully.")
     elif intent == 'create_presentation':
         topic = entities.get('topic', 'general topic')
