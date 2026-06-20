@@ -2,7 +2,7 @@
 LLM Provider Module
 
 Multi-provider LLM routing system for content generation tasks.
-Supports Gemini, Grok (xAI), OpenAI with automatic fallback.
+Supports Gemini, Grok (xAI), OpenAI, DeepSeek, and Ollama with fallback.
 """
 
 import json
@@ -29,6 +29,21 @@ class EmailDraft:
     body: str
 
 
+@dataclass
+class AssistantAnswer:
+    """Structured assistant response for general questions."""
+
+    answer: str
+    suggested_actions: List[str]
+
+
+@dataclass
+class TextSummary:
+    """Structured free-text summary."""
+
+    summary: str
+
+
 class LLMProviderError(Exception):
     """Custom exception for LLM provider errors."""
     pass
@@ -40,13 +55,14 @@ class LLMProviderManager:
     def __init__(self):
         """Initialize the provider manager."""
         self.enable_ai = os.getenv('KARYAKRIT_ENABLE_AI', 'true').lower() == 'true'
-        self.online_provider_order = os.getenv('KARYAKRIT_ONLINE_PROVIDER_ORDER', 'gemini,grok,openai,fallback').split(',')
+        self.online_provider_order = os.getenv('KARYAKRIT_ONLINE_PROVIDER_ORDER', 'gemini,grok,openai,deepseek,fallback').split(',')
         self.offline_provider_order = os.getenv('KARYAKRIT_OFFLINE_PROVIDER_ORDER', 'ollama,fallback').split(',')
 
         # API keys
         self.gemini_api_key = os.getenv('GEMINI_API_KEY')
         self.xai_api_key = os.getenv('XAI_API_KEY')
         self.openai_api_key = os.getenv('OPENAI_API_KEY')
+        self.deepseek_api_key = os.getenv('DEEPSEEK_API_KEY')
         self.ollama_host = os.getenv('OLLAMA_HOST', 'http://localhost:11434')
         self.ollama_model = os.getenv('OLLAMA_MODEL', 'llama2')
 
@@ -55,6 +71,7 @@ class LLMProviderManager:
             'gemini': 30,
             'grok': 30,
             'openai': 30,
+            'deepseek': 30,
             'ollama': 10
         }
 
@@ -103,6 +120,8 @@ class LLMProviderManager:
                     raw = self._call_grok(prompt)
                 elif provider == 'openai':
                     raw = self._call_openai(prompt)
+                elif provider == 'deepseek':
+                    raw = self._call_deepseek(prompt)
                 elif provider == 'ollama':
                     raw = self._call_ollama(prompt)
                 elif provider == 'fallback':
@@ -156,6 +175,8 @@ class LLMProviderManager:
                     raw = self._call_grok(prompt)
                 elif provider == 'openai':
                     raw = self._call_openai(prompt)
+                elif provider == 'deepseek':
+                    raw = self._call_deepseek(prompt)
                 elif provider == 'ollama':
                     raw = self._call_ollama(prompt)
                 elif provider == 'fallback':
@@ -179,6 +200,86 @@ class LLMProviderManager:
 
         logger.warning("All AI providers failed or are unconfigured; using deterministic fallback")
         return self._generate_fallback_email(email_type, recipient, tone, purpose)
+
+    def generate_assistant_answer(self, user_request: str) -> AssistantAnswer:
+        """
+        Generate a smart natural-language answer for broad requests.
+        """
+        if not self.enable_ai:
+            return self._generate_fallback_answer(user_request)
+
+        prompt = self._build_assistant_prompt(user_request)
+
+        for provider in self.provider_order:
+            try:
+                logger.info(f"Attempting assistant answer with provider: {provider}")
+                if provider == 'gemini':
+                    raw = self._call_gemini(prompt)
+                elif provider == 'grok':
+                    raw = self._call_grok(prompt)
+                elif provider == 'openai':
+                    raw = self._call_openai(prompt)
+                elif provider == 'deepseek':
+                    raw = self._call_deepseek(prompt)
+                elif provider == 'ollama':
+                    raw = self._call_ollama(prompt)
+                elif provider == 'fallback':
+                    return self._generate_fallback_answer(user_request)
+                else:
+                    continue
+
+                result = self._to_assistant_answer(raw)
+                if self._validate_assistant_answer(result):
+                    return result
+            except Exception as e:
+                logger.warning(f"Assistant provider {provider} failed: {e}")
+                continue
+
+        return self._generate_fallback_answer(user_request)
+
+    def generate_summary(self, text: str, instruction: str = "") -> str:
+        """Generate a concise summary for text content."""
+        if not self.enable_ai:
+            return self._generate_fallback_summary(text)
+
+        prompt = f"""
+Summarize the following content.
+Instruction: {instruction or 'Give a short but useful summary.'}
+
+Return ONLY a raw JSON object:
+{{
+  "summary": "Your summary here"
+}}
+
+Content:
+{text}
+"""
+
+        for provider in self.provider_order:
+            try:
+                if provider == 'gemini':
+                    raw = self._call_gemini(prompt)
+                elif provider == 'grok':
+                    raw = self._call_grok(prompt)
+                elif provider == 'openai':
+                    raw = self._call_openai(prompt)
+                elif provider == 'deepseek':
+                    raw = self._call_deepseek(prompt)
+                elif provider == 'ollama':
+                    raw = self._call_ollama(prompt)
+                elif provider == 'fallback':
+                    return self._generate_fallback_summary(text)
+                else:
+                    continue
+
+                result = self._to_text_summary(raw)
+                if self._validate_text_summary(result):
+                    return result.summary
+            except Exception as e:
+                logger.warning(f"Summary provider {provider} failed: {e}")
+                continue
+
+        return self._generate_fallback_summary(text)
 
     # ------------------------------------------------------------------
     # Provider calls
@@ -240,6 +341,28 @@ class LLMProviderManager:
         }
 
         response = requests.post(url, headers=headers, json=data, timeout=self.timeouts['openai'])
+        response.raise_for_status()
+
+        result = response.json()
+        return self._parse_openai_response(result)
+
+    def _call_deepseek(self, prompt: str) -> Dict:
+        """Call DeepSeek API. Returns a raw parsed JSON dict."""
+        if not self.deepseek_api_key:
+            raise LLMProviderError("DeepSeek API key not configured")
+
+        url = "https://api.deepseek.com/chat/completions"
+        headers = {
+            'Authorization': f'Bearer {self.deepseek_api_key}',
+            'Content-Type': 'application/json'
+        }
+        data = {
+            "model": "deepseek-chat",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 1000
+        }
+
+        response = requests.post(url, headers=headers, json=data, timeout=self.timeouts['deepseek'])
         response.raise_for_status()
 
         result = response.json()
@@ -348,6 +471,31 @@ class LLMProviderManager:
             return None
         return EmailDraft(subject=subject, body=body)
 
+    @staticmethod
+    def _to_assistant_answer(raw: Any) -> Optional[AssistantAnswer]:
+        """Convert a raw JSON dict into an AssistantAnswer, or None if malformed."""
+        if isinstance(raw, AssistantAnswer):
+            return raw
+        if not isinstance(raw, dict):
+            return None
+        answer = raw.get('answer')
+        suggested_actions = raw.get('suggested_actions', [])
+        if not answer or not isinstance(suggested_actions, list):
+            return None
+        return AssistantAnswer(answer=answer, suggested_actions=suggested_actions)
+
+    @staticmethod
+    def _to_text_summary(raw: Any) -> Optional[TextSummary]:
+        """Convert a raw JSON dict into a TextSummary, or None if malformed."""
+        if isinstance(raw, TextSummary):
+            return raw
+        if not isinstance(raw, dict):
+            return None
+        summary = raw.get('summary')
+        if not summary:
+            return None
+        return TextSummary(summary=summary)
+
     # ------------------------------------------------------------------
     # Prompt building
     # ------------------------------------------------------------------
@@ -385,6 +533,22 @@ Return ONLY a raw JSON object (no markdown formatting, no code fences, no extra 
 }}
 
 Make it professional and appropriate for office communication.
+"""
+
+    def _build_assistant_prompt(self, user_request: str) -> str:
+        """Build prompt for smart assistant answers."""
+        return f"""
+You are a desktop productivity assistant.
+
+User request: {user_request}
+
+Return ONLY a raw JSON object with this structure:
+{{
+  "answer": "A direct, helpful answer in plain English.",
+  "suggested_actions": ["Short action 1", "Short action 2"]
+}}
+
+Keep the answer concise, practical, and action-oriented. If the user asks for help completing a task, break it into a few smart next steps.
 """
 
     # ------------------------------------------------------------------
@@ -473,6 +637,27 @@ Best regards,
 
         return EmailDraft(subject=subject, body=body.strip())
 
+    def _generate_fallback_answer(self, user_request: str) -> AssistantAnswer:
+        """Generate a deterministic answer when AI is unavailable."""
+        cleaned = user_request.strip().rstrip("?")
+        answer = (
+            f"I understood your request as: {cleaned}. "
+            "I can help best if you ask me to create a file, draft an email, manage a task, search local files, or open an app or website."
+        )
+        suggested_actions = [
+            "Try a direct command like create task submit report",
+            "Use ask <question> for a smarter natural-language reply",
+            "Use search file <name> to find a local document",
+        ]
+        return AssistantAnswer(answer=answer, suggested_actions=suggested_actions)
+
+    def _generate_fallback_summary(self, text: str) -> str:
+        """Generate a deterministic summary if no model is available."""
+        cleaned = re.sub(r"\s+", " ", text).strip()
+        if len(cleaned) <= 500:
+            return cleaned
+        return cleaned[:500].rsplit(" ", 1)[0] + "..."
+
     # ------------------------------------------------------------------
     # Validation
     # ------------------------------------------------------------------
@@ -506,3 +691,17 @@ Best regards,
             return False
 
         return True
+
+    def _validate_assistant_answer(self, answer: Any) -> bool:
+        """Validate assistant answer structure."""
+        if not isinstance(answer, AssistantAnswer):
+            return False
+        if not answer.answer:
+            return False
+        if not isinstance(answer.suggested_actions, list):
+            return False
+        return True
+
+    def _validate_text_summary(self, summary: Any) -> bool:
+        """Validate summary structure."""
+        return isinstance(summary, TextSummary) and bool(summary.summary)

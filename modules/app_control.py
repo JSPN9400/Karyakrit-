@@ -7,6 +7,8 @@ Controls application launching, with cross-platform support
 
 import platform
 import subprocess
+import webbrowser
+from shutil import which
 
 # Map a friendly app name to the command/executable used to launch it,
 # per platform. Extend these dicts to support more apps.
@@ -17,6 +19,21 @@ _APP_COMMANDS = {
         'calculator': 'calc.exe',
         'paint': 'mspaint.exe',
         'explorer': 'explorer.exe',
+        'chrome': 'chrome.exe',
+        'edge': 'msedge.exe',
+        'firefox': 'firefox.exe',
+        'word': 'winword.exe',
+        'excel': 'excel.exe',
+        'powerpoint': 'powerpnt.exe',
+        'outlook': 'outlook.exe',
+        'cmd': 'cmd.exe',
+        'terminal': 'wt.exe',
+        'powershell': 'powershell.exe',
+        'settings': 'ms-settings:',
+        'whatsapp': 'https://web.whatsapp.com/',
+        'linkedin': 'https://www.linkedin.com/',
+        'github': 'https://github.com/',
+        'youtube': 'https://www.youtube.com/',
     },
     'Darwin': {  # macOS
         'notepad': 'TextEdit',
@@ -53,14 +70,23 @@ def open_app(app_name: str) -> bool:
     target = commands.get(key)
 
     if not target:
-        supported = ', '.join(sorted(commands.keys())) or 'none configured for this OS'
-        print(f"App '{app_name}' not supported on {system}. Supported: {supported}.")
-        return False
+        target = app_name.strip()
 
     try:
+        if target.startswith(('http://', 'https://')):
+            webbrowser.open(target)
+            print(f"Opening {app_name}...")
+            return True
         if system == 'Windows':
             import os
-            os.startfile(target)  # noqa: only valid on Windows, guarded above
+            try:
+                os.startfile(target)  # noqa: only valid on Windows, guarded above
+            except OSError:
+                executable = which(target) or which(f"{target}.exe")
+                if executable:
+                    subprocess.Popen([executable])
+                else:
+                    subprocess.Popen(['cmd', '/c', 'start', '', target], shell=False)
         elif system == 'Darwin':
             subprocess.Popen(['open', '-a', target])
         else:  # Linux and anything else we attempt via subprocess

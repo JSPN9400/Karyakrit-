@@ -18,58 +18,31 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import sys
-from core.command_parser import parse_command
-from core.intent_engine import detect_intent
-from core.task_router import route_task
-from core.voice_input import listen_from_mic
+
+from core.assistant_service import HELP_TEXT, execute_command
+
+
+def launch_gui():
+    """Start the desktop GUI entrypoint."""
+    from gui import run_gui
+
+    run_gui()
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--gui":
+        launch_gui()
+        return
+
     print("Welcome to Karyakrit Lite v1!")
-    print("Type 'help' for commands or 'exit' to quit.")
+    print("Type 'help' for commands, 'exit' to quit, or run 'python main.py --gui'.")
 
     while True:
         try:
             user_input = input("Karyakrit> ").strip()
+            output = execute_command(user_input)
+            print(output)
             if user_input.lower() == 'exit':
-                print("Goodbye!")
                 break
-            elif user_input.lower() == 'help':
-                print("Commands:")
-                print("- create excel <filename>")
-                print("- create presentation <filename>")
-                print("- open app <app_name>")
-                print("- voice <seconds>  (record and transcribe from microphone)")
-                print("- exit")
-                continue
-
-            # Voice input trigger: 'voice' or 'voice <seconds>'
-            if user_input.lower().startswith('voice'):
-                parts = user_input.split()
-                secs = 5
-                if len(parts) > 1 and parts[1].isdigit():
-                    secs = int(parts[1])
-                try:
-                    transcribed = listen_from_mic(timeout=secs)
-                    print(f"You said: {transcribed}")
-                    user_input = transcribed
-                except Exception as e:
-                    print(f"Voice input failed: {e}")
-                    continue
-
-            # Parse command
-            parsed = parse_command(user_input)
-            if not parsed:
-                print("Invalid command. Type 'help' for options.")
-                continue
-
-            # Detect intent
-            intent = detect_intent(parsed)
-            if not intent:
-                print("Intent not recognized.")
-                continue
-
-            # Route task
-            route_task(intent, parsed)
 
         except KeyboardInterrupt:
             print("\nGoodbye!")

@@ -35,7 +35,7 @@ class NLUEngine:
             'presentation': ['presentation', 'presetion', 'ppt', 'slides', 'slide', 'powerpoint'],
             'excel': ['excel', 'xlsx', 'sheet', 'spreadsheet'],
             'email': ['email', 'mail', 'gmail', 'outlook', 'message'],
-            'task': ['task', 'todo', 'kaam', 'work', 'assignment'],
+            'task': ['task', 'todo', 'kaam', 'assignment'],
             'note': ['note', 'notes', 'likh', 'likho', 'banao'],
             'open': ['open', 'kholo', 'start', 'launch', 'run'],
             'create': ['create', 'make', 'bana', 'banao', 'generate'],
@@ -47,7 +47,12 @@ class NLUEngine:
             'app': ['app', 'application', 'software', 'program'],
             'website': ['website', 'site', 'web', 'page'],
             'file': ['file', 'files', 'document', 'docs'],
-            'folder': ['folder', 'directory', 'dir']
+            'folder': ['folder', 'directory', 'dir'],
+            'ask': ['ask', 'answer', 'explain', 'question', 'query', 'smart', 'assistant', 'help'],
+            'pdf': ['pdf', 'document', 'report'],
+            'profile': ['profile', 'about', 'bio', 'myself'],
+            'project': ['project', 'projects'],
+            'websearch': ['internet', 'google', 'websearch', 'searchweb', 'online']
         }
 
         # Intent keywords for fuzzy matching
@@ -62,7 +67,16 @@ class NLUEngine:
             'open_app': ['open', 'app', 'launch', 'start'],
             'open_website': ['open', 'website', 'site', 'web'],
             'file_search': ['search', 'find', 'file', 'files'],
-            'file_organize': ['organize', 'arrange', 'folder', 'files']
+            'file_organize': ['organize', 'arrange', 'folder', 'files'],
+            'ask_assistant': ['ask', 'answer', 'explain', 'question', 'assistant', 'help'],
+            'web_search': ['search', 'internet', 'web', 'google', 'online'],
+            'summarize_pdf': ['summarize', 'summary', 'pdf', 'document'],
+            'remember_profile': ['remember', 'profile', 'about', 'me'],
+            'show_profile': ['show', 'profile', 'about'],
+            'add_project': ['add', 'project', 'new'],
+            'list_projects': ['list', 'projects'],
+            'open_social': ['whatsapp', 'linkedin', 'github', 'instagram', 'youtube'],
+            'linkedin_jobs': ['linkedin', 'jobs', 'job']
         }
 
         # Entity extraction patterns
@@ -122,7 +136,8 @@ class NLUEngine:
         'notepad', 'calc', 'calculator', 'chrome', 'firefox', 'edge', 'safari',
         'paint', 'explorer', 'finder', 'terminal', 'cmd', 'powershell',
         'gmail', 'outlook', 'word', 'excel', 'powerpoint', 'vscode', 'code',
-        'marks', 'grades', 'scores',
+        'marks', 'grades', 'scores', 'whatsapp', 'linkedin', 'github',
+        'instagram', 'youtube', 'google', 'pdf', 'assistant',
     }
 
     def _normalize_text(self, text: str) -> str:
@@ -152,6 +167,10 @@ class NLUEngine:
 
     def _detect_intent(self, normalized_text: str) -> Tuple[str, float]:
         """Detect intent using fuzzy matching against keywords."""
+        exact_intent = self._detect_exact_intent(normalized_text)
+        if exact_intent:
+            return exact_intent, 0.98
+
         words = normalized_text.split()
         best_intent = 'unknown'
         best_score = 0.0
@@ -172,15 +191,90 @@ class NLUEngine:
         if matched_keywords > 1:
             best_score = min(1.0, best_score + 0.2)
 
+        if best_score < 0.55 and len(words) >= 4:
+            return 'ask_assistant', 0.65
+
         return best_intent, best_score
+
+    def _detect_exact_intent(self, normalized_text: str) -> Optional[str]:
+        """Use exact phrase rules before fuzzy matching."""
+        text = normalized_text.strip()
+
+        if text.startswith('ask '):
+            return 'ask_assistant'
+        if text.startswith(('help me ', 'explain ', 'question ')):
+            return 'ask_assistant'
+        if text.startswith(('search web ', 'search website ', 'search internet ', 'google ', 'web search ')):
+            return 'web_search'
+        if text.startswith(('summarize pdf ', 'summarise pdf ', 'pdf summary ')):
+            return 'summarize_pdf'
+        if text.startswith(('remember about me ', 'remember profile me ', 'remember my ', 'remember ', 'set profile ', 'my profile is ')):
+            return 'remember_profile'
+        if text in {'show profile', 'list profile', 'who am i', 'my profile'}:
+            return 'show_profile'
+        if text.startswith(('add project ', 'new project ')):
+            return 'add_project'
+        if text in {'list projects', 'list project', 'show projects'}:
+            return 'list_projects'
+        if text.startswith(('linkedin jobs ', 'search linkedin jobs ')):
+            return 'linkedin_jobs'
+        if text in {'open whatsapp', 'open linkedin', 'open github', 'open instagram', 'open youtube'}:
+            return 'open_social'
+        if text.startswith(('list tasks', 'list task')) or text in {'tasks', 'task list'}:
+            return 'list_tasks'
+        if text.startswith(('complete task ', 'finish task ', 'done task ', 'mark task ')):
+            return 'complete_task'
+        if text.startswith(('create task ', 'make task ', 'task ', 'todo ')):
+            return 'create_task'
+        if text.startswith(('search file ', 'find file ', 'find files ', 'search files ')):
+            return 'file_search'
+        if text.startswith(('open website ', 'open site ', 'open web ')):
+            return 'open_website'
+        return None
 
     def _extract_entities(self, normalized_text: str) -> Dict[str, str]:
         """Extract entities using regex patterns."""
         entities = {}
 
+        text = normalized_text.strip()
+        if text.startswith(('create task ', 'make task ', 'task ', 'todo ')):
+            entities['task_title'] = re.sub(r'^(create task|make task|task|todo)\s+', '', text).strip()
+        elif text.startswith(('complete task ', 'finish task ', 'done task ', 'mark task ')):
+            entities['task_title'] = re.sub(r'^(complete task|finish task|done task|mark task)\s+', '', text).strip()
+        elif text.startswith('ask '):
+            entities['topic'] = text[4:].strip()
+        elif text.startswith(('search file ', 'find file ', 'find files ', 'search files ')):
+            entities['topic'] = re.sub(r'^(search file|find file|find files|search files)\s+', '', text).strip()
+        elif text.startswith(('search web ', 'search website ', 'search internet ', 'google ', 'web search ')):
+            entities['topic'] = re.sub(r'^(search web|search website|search internet|google|web search)\s+', '', text).strip()
+        elif text.startswith(('summarize pdf ', 'summarise pdf ', 'pdf summary ')):
+            entities['file_name'] = re.sub(r'^(summarize pdf|summarise pdf|pdf summary)\s+', '', text).strip()
+        elif text.startswith('remember about me '):
+            entities['profile_fact'] = text[len('remember about me '):].strip()
+        elif text.startswith('remember profile me '):
+            entities['profile_fact'] = text[len('remember profile me '):].strip()
+        elif text.startswith('remember my '):
+            entities['profile_fact'] = text[len('remember my '):].strip()
+        elif text.startswith('remember '):
+            entities['profile_fact'] = text[len('remember '):].strip()
+        elif text.startswith('set profile '):
+            entities['profile_fact'] = text[len('set profile '):].strip()
+        elif text.startswith(('add project ', 'new project ')):
+            entities['project_name'] = re.sub(r'^(add project|new project)\s+', '', text).strip()
+        elif text.startswith(('linkedin jobs ', 'search linkedin jobs ')):
+            entities['topic'] = re.sub(r'^(linkedin jobs|search linkedin jobs)\s+', '', text).strip()
+        elif text.startswith('open app '):
+            entities['app_name'] = text[len('open app '):].strip()
+        elif text.startswith('open '):
+            entities['app_name'] = text[len('open '):].strip()
+
         for entity_type, pattern in self.entity_patterns.items():
             match = pattern.search(normalized_text)
-            if match:
+            if match and entity_type not in entities:
+                if entity_type == 'task_title' and text.startswith('ask '):
+                    continue
+                if entity_type == 'task_title' and text.startswith(('remember ', 'show profile')):
+                    continue
                 entities[entity_type] = match.group(1).strip()
 
         # Special handling for topic if not found
