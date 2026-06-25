@@ -54,15 +54,8 @@ def _generate_topic_data(topic: str, row_count: int = 8) -> Optional[pd.DataFram
             if provider == 'fallback':
                 continue
             try:
-                if provider == 'gemini':
-                    raw = manager._call_gemini(prompt)
-                elif provider == 'grok':
-                    raw = manager._call_grok(prompt)
-                elif provider == 'openai':
-                    raw = manager._call_openai(prompt)
-                elif provider == 'ollama':
-                    raw = manager._call_ollama(prompt)
-                else:
+                raw = manager._call_provider(provider, prompt)
+                if raw is None:
                     continue
             except Exception as e:
                 logger.warning(f"Excel data provider {provider} failed: {e}")

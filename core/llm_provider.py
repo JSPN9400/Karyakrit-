@@ -2,7 +2,8 @@
 LLM Provider Module
 
 Multi-provider LLM routing system for content generation tasks.
-Supports Gemini, Grok (xAI), OpenAI, DeepSeek, and Ollama with fallback.
+Supports Gemini, Grok (xAI), OpenAI, DeepSeek, Anthropic Claude, Groq,
+OpenRouter (multi-model gateway), and Ollama (local) with automatic fallback.
 """
 
 import json
@@ -35,6 +36,7 @@ class AssistantAnswer:
 
     answer: str
     suggested_actions: List[str]
+    is_fallback: bool = False
 
 
 @dataclass
@@ -55,7 +57,10 @@ class LLMProviderManager:
     def __init__(self):
         """Initialize the provider manager."""
         self.enable_ai = os.getenv('KARYAKRIT_ENABLE_AI', 'true').lower() == 'true'
-        self.online_provider_order = os.getenv('KARYAKRIT_ONLINE_PROVIDER_ORDER', 'gemini,grok,openai,deepseek,fallback').split(',')
+        self.online_provider_order = os.getenv(
+            'KARYAKRIT_ONLINE_PROVIDER_ORDER',
+            'gemini,grok,openai,deepseek,anthropic,groq,openrouter,fallback'
+        ).split(',')
         self.offline_provider_order = os.getenv('KARYAKRIT_OFFLINE_PROVIDER_ORDER', 'ollama,fallback').split(',')
 
         # API keys
@@ -63,8 +68,22 @@ class LLMProviderManager:
         self.xai_api_key = os.getenv('XAI_API_KEY')
         self.openai_api_key = os.getenv('OPENAI_API_KEY')
         self.deepseek_api_key = os.getenv('DEEPSEEK_API_KEY')
+        self.anthropic_api_key = os.getenv('ANTHROPIC_API_KEY')
+        self.groq_api_key = os.getenv('GROQ_API_KEY')
+        self.openrouter_api_key = os.getenv('OPENROUTER_API_KEY')
         self.ollama_host = os.getenv('OLLAMA_HOST', 'http://localhost:11434')
         self.ollama_model = os.getenv('OLLAMA_MODEL', 'llama2')
+
+        # Model names are configurable since providers periodically retire
+        # older model identifiers (e.g. Gemini retired "gemini-pro" and xAI
+        # retired "grok-beta" in favor of newer model names).
+        self.gemini_model = os.getenv('GEMINI_MODEL', 'gemini-2.0-flash')
+        self.grok_model = os.getenv('XAI_MODEL', 'grok-2-latest')
+        self.openai_model = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
+        self.deepseek_model = os.getenv('DEEPSEEK_MODEL', 'deepseek-chat')
+        self.anthropic_model = os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-6')
+        self.groq_model = os.getenv('GROQ_MODEL', 'llama-3.3-70b-versatile')
+        self.openrouter_model = os.getenv('OPENROUTER_MODEL', 'openai/gpt-4o-mini')
 
         # Provider configurations
         self.timeouts = {
@@ -72,6 +91,9 @@ class LLMProviderManager:
             'grok': 30,
             'openai': 30,
             'deepseek': 30,
+            'anthropic': 30,
+            'groq': 20,
+            'openrouter': 30,
             'ollama': 10
         }
 
@@ -92,6 +114,34 @@ class LLMProviderManager:
         except (requests.RequestException, requests.Timeout):
             logger.info("Internet connectivity check failed - operating in offline mode")
             return False
+
+    def _call_provider(self, provider: str, prompt: str) -> Optional[Dict]:
+        """
+        Single dispatch point for all providers. Returns the raw parsed JSON
+        dict, or None if `provider` is 'fallback' (caller handles that case)
+        or unrecognized.
+
+        Centralizing dispatch here (instead of repeating an if/elif chain in
+        every generate_* method) is what previously caused new providers to
+        be wired into some generation methods but not others.
+        """
+        if provider == 'gemini':
+            return self._call_gemini(prompt)
+        if provider == 'grok':
+            return self._call_grok(prompt)
+        if provider == 'openai':
+            return self._call_openai(prompt)
+        if provider == 'deepseek':
+            return self._call_deepseek(prompt)
+        if provider == 'anthropic':
+            return self._call_anthropic(prompt)
+        if provider == 'groq':
+            return self._call_groq(prompt)
+        if provider == 'openrouter':
+            return self._call_openrouter(prompt)
+        if provider == 'ollama':
+            return self._call_ollama(prompt)
+        return None
 
     def generate_presentation_outline(self, topic: str, slide_count: int) -> PresentationOutline:
         """
@@ -114,19 +164,11 @@ class LLMProviderManager:
         for provider in self.provider_order:
             try:
                 logger.info(f"Attempting presentation generation with provider: {provider}")
-                if provider == 'gemini':
-                    raw = self._call_gemini(prompt)
-                elif provider == 'grok':
-                    raw = self._call_grok(prompt)
-                elif provider == 'openai':
-                    raw = self._call_openai(prompt)
-                elif provider == 'deepseek':
-                    raw = self._call_deepseek(prompt)
-                elif provider == 'ollama':
-                    raw = self._call_ollama(prompt)
-                elif provider == 'fallback':
+                if provider == 'fallback':
                     return self._generate_fallback_presentation(topic, slide_count)
-                else:
+
+                raw = self._call_provider(provider, prompt)
+                if raw is None:
                     continue
 
                 # Convert the raw JSON dict returned by the API into a PresentationOutline
@@ -169,19 +211,11 @@ class LLMProviderManager:
         for provider in self.provider_order:
             try:
                 logger.info(f"Attempting email generation with provider: {provider}")
-                if provider == 'gemini':
-                    raw = self._call_gemini(prompt)
-                elif provider == 'grok':
-                    raw = self._call_grok(prompt)
-                elif provider == 'openai':
-                    raw = self._call_openai(prompt)
-                elif provider == 'deepseek':
-                    raw = self._call_deepseek(prompt)
-                elif provider == 'ollama':
-                    raw = self._call_ollama(prompt)
-                elif provider == 'fallback':
+                if provider == 'fallback':
                     return self._generate_fallback_email(email_type, recipient, tone, purpose)
-                else:
+
+                raw = self._call_provider(provider, prompt)
+                if raw is None:
                     continue
 
                 # Convert the raw JSON dict returned by the API into an EmailDraft
@@ -213,19 +247,11 @@ class LLMProviderManager:
         for provider in self.provider_order:
             try:
                 logger.info(f"Attempting assistant answer with provider: {provider}")
-                if provider == 'gemini':
-                    raw = self._call_gemini(prompt)
-                elif provider == 'grok':
-                    raw = self._call_grok(prompt)
-                elif provider == 'openai':
-                    raw = self._call_openai(prompt)
-                elif provider == 'deepseek':
-                    raw = self._call_deepseek(prompt)
-                elif provider == 'ollama':
-                    raw = self._call_ollama(prompt)
-                elif provider == 'fallback':
+                if provider == 'fallback':
                     return self._generate_fallback_answer(user_request)
-                else:
+
+                raw = self._call_provider(provider, prompt)
+                if raw is None:
                     continue
 
                 result = self._to_assistant_answer(raw)
@@ -257,19 +283,11 @@ Content:
 
         for provider in self.provider_order:
             try:
-                if provider == 'gemini':
-                    raw = self._call_gemini(prompt)
-                elif provider == 'grok':
-                    raw = self._call_grok(prompt)
-                elif provider == 'openai':
-                    raw = self._call_openai(prompt)
-                elif provider == 'deepseek':
-                    raw = self._call_deepseek(prompt)
-                elif provider == 'ollama':
-                    raw = self._call_ollama(prompt)
-                elif provider == 'fallback':
+                if provider == 'fallback':
                     return self._generate_fallback_summary(text)
-                else:
+
+                raw = self._call_provider(provider, prompt)
+                if raw is None:
                     continue
 
                 result = self._to_text_summary(raw)
@@ -290,7 +308,7 @@ Content:
         if not self.gemini_api_key:
             raise LLMProviderError("Gemini API key not configured")
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={self.gemini_api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.gemini_model}:generateContent?key={self.gemini_api_key}"
         headers = {'Content-Type': 'application/json'}
         data = {
             "contents": [{"parts": [{"text": prompt}]}]
@@ -313,7 +331,7 @@ Content:
             'Content-Type': 'application/json'
         }
         data = {
-            "model": "grok-beta",
+            "model": self.grok_model,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 1000
         }
@@ -335,7 +353,7 @@ Content:
             'Content-Type': 'application/json'
         }
         data = {
-            "model": "gpt-3.5-turbo",
+            "model": self.openai_model,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 1000
         }
@@ -357,12 +375,91 @@ Content:
             'Content-Type': 'application/json'
         }
         data = {
-            "model": "deepseek-chat",
+            "model": self.deepseek_model,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 1000
         }
 
         response = requests.post(url, headers=headers, json=data, timeout=self.timeouts['deepseek'])
+        response.raise_for_status()
+
+        result = response.json()
+        return self._parse_openai_response(result)
+
+    def _call_anthropic(self, prompt: str) -> Dict:
+        """Call Anthropic's Claude API. Returns a raw parsed JSON dict."""
+        if not self.anthropic_api_key:
+            raise LLMProviderError("Anthropic API key not configured")
+
+        url = "https://api.anthropic.com/v1/messages"
+        headers = {
+            'x-api-key': self.anthropic_api_key,
+            'anthropic-version': '2023-06-01',
+            'Content-Type': 'application/json'
+        }
+        data = {
+            "model": self.anthropic_model,
+            "max_tokens": 1000,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+
+        response = requests.post(url, headers=headers, json=data, timeout=self.timeouts['anthropic'])
+        response.raise_for_status()
+
+        result = response.json()
+        return self._parse_anthropic_response(result)
+
+    def _call_groq(self, prompt: str) -> Dict:
+        """Call Groq's fast-inference API (OpenAI-compatible). Returns a raw parsed JSON dict.
+
+        Note: Groq (the fast LPU-inference company, groq.com) is unrelated to
+        xAI's Grok model despite the near-identical name. Both are supported
+        as separate providers here.
+        """
+        if not self.groq_api_key:
+            raise LLMProviderError("Groq API key not configured")
+
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {
+            'Authorization': f'Bearer {self.groq_api_key}',
+            'Content-Type': 'application/json'
+        }
+        data = {
+            "model": self.groq_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 1000
+        }
+
+        response = requests.post(url, headers=headers, json=data, timeout=self.timeouts['groq'])
+        response.raise_for_status()
+
+        result = response.json()
+        return self._parse_openai_response(result)
+
+    def _call_openrouter(self, prompt: str) -> Dict:
+        """Call OpenRouter, a gateway to many hosted models. Returns a raw parsed JSON dict.
+
+        OpenRouter exposes a single OpenAI-compatible endpoint in front of
+        dozens of providers/models (set OPENROUTER_MODEL to pick one, e.g.
+        "anthropic/claude-3.5-haiku", "meta-llama/llama-3.1-8b-instruct:free",
+        "google/gemini-flash-1.5"). Useful as a single integration point for
+        trying many models without adding a new provider per model.
+        """
+        if not self.openrouter_api_key:
+            raise LLMProviderError("OpenRouter API key not configured")
+
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        headers = {
+            'Authorization': f'Bearer {self.openrouter_api_key}',
+            'Content-Type': 'application/json'
+        }
+        data = {
+            "model": self.openrouter_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 1000
+        }
+
+        response = requests.post(url, headers=headers, json=data, timeout=self.timeouts['openrouter'])
         response.raise_for_status()
 
         result = response.json()
@@ -419,12 +516,24 @@ Content:
             raise LLMProviderError(f"Failed to parse Grok response: {e}")
 
     def _parse_openai_response(self, response: Dict) -> Dict:
-        """Parse OpenAI API response into a raw dict."""
+        """Parse OpenAI-compatible API response into a raw dict.
+
+        Used for OpenAI, DeepSeek, Groq, and OpenRouter, which all share the
+        same `choices[0].message.content` response shape.
+        """
         try:
             text = response['choices'][0]['message']['content']
             return json.loads(self._extract_json_text(text))
         except (KeyError, IndexError, json.JSONDecodeError) as e:
-            raise LLMProviderError(f"Failed to parse OpenAI response: {e}")
+            raise LLMProviderError(f"Failed to parse OpenAI-compatible response: {e}")
+
+    def _parse_anthropic_response(self, response: Dict) -> Dict:
+        """Parse Anthropic Claude API response into a raw dict."""
+        try:
+            text = response['content'][0]['text']
+            return json.loads(self._extract_json_text(text))
+        except (KeyError, IndexError, json.JSONDecodeError) as e:
+            raise LLMProviderError(f"Failed to parse Anthropic response: {e}")
 
     def _parse_ollama_response(self, response: Dict) -> Dict:
         """Parse Ollama API response into a raw dict."""
@@ -649,7 +758,7 @@ Best regards,
             "Use ask <question> for a smarter natural-language reply",
             "Use search file <name> to find a local document",
         ]
-        return AssistantAnswer(answer=answer, suggested_actions=suggested_actions)
+        return AssistantAnswer(answer=answer, suggested_actions=suggested_actions, is_fallback=True)
 
     def _generate_fallback_summary(self, text: str) -> str:
         """Generate a deterministic summary if no model is available."""

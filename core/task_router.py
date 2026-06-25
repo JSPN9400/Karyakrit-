@@ -17,7 +17,7 @@ from modules.task_manager import TaskManager
 from modules.web_search import answer_from_web
 from core.llm_provider import LLMProviderManager
 from core.nlu_engine import NLUEngine
-from modules.app_control import open_app
+from modules.app_control import open_app, list_installed_apps
 
 # Initialize NLU engine
 nlu_engine = NLUEngine()
@@ -91,6 +91,14 @@ def route_task(intent, parsed_command):
     elif intent == 'open_app':
         app_name = entities.get('app_name', ' '.join(args[1:]) if len(args) > 1 else '')
         open_app(app_name)
+    elif intent == 'list_apps':
+        apps = list_installed_apps()
+        if not apps:
+            print("No installed apps were discovered on this system.")
+        else:
+            print(f"Discovered {len(apps)} installed apps (showing up to 30):")
+            for name in apps:
+                print(f"- {name}")
     elif intent == 'draft_email':
         email_type = entities.get('topic', 'general')
         recipient = entities.get('recipient', 'colleague')
@@ -160,6 +168,37 @@ def route_task(intent, parsed_command):
             print("Suggested actions:")
             for action in answer.suggested_actions:
                 print(f"- {action}")
+    elif intent == 'ask_about_me':
+        profile = profile_manager.load_profile()
+        has_data = bool(profile.get('details') or profile.get('facts')
+                         or profile.get('social') or profile.get('projects'))
+        if not has_data:
+            print(
+                "I don't have anything saved about you yet. Tell me with: "
+                "remember about me <fact>, e.g. 'remember about me I am a Python developer from Delhi'."
+            )
+        else:
+            manager = LLMProviderManager()
+            answer_text = None
+            if manager.enable_ai:
+                profile_context = profile_manager.profile_context()
+                answer = manager.generate_assistant_answer(
+                    f"User profile context (the ONLY facts you may use - do not invent anything not listed here): "
+                    f"{profile_context}\nUser question: {full_command.strip()}\n"
+                    f"Answer directly using only the saved facts above. If the answer isn't in the saved "
+                    f"facts, say so plainly instead of guessing."
+                )
+                # generate_assistant_answer silently falls back to a generic,
+                # profile-blind template when no provider actually succeeded
+                # (e.g. enable_ai=true but no API key configured and Ollama
+                # isn't running). In that case direct profile data is far
+                # more useful than the template.
+                if not answer.is_fallback:
+                    answer_text = answer.answer
+            if answer_text:
+                print(answer_text)
+            else:
+                print(profile_manager.format_profile())
     elif intent == 'web_search':
         query = entities.get('topic', full_command.strip())
         print(answer_from_web(query))
